@@ -1,0 +1,150 @@
+---
+title: "Estimating Joint Models for Longitudinal and Time-to-Event Data with rstanarm"
+format: html
+editor: visual
+---
+
+## 
+
+```{r}
+help("datasets", package = "rstanarm")
+
+library(rstanarm)
+mod1 <- stan_jm(formulaLong = logBili ~ sex + trt + year + (year | id), 
+                dataLong = pbcLong,
+                formulaEvent = survival::Surv(futimeYears, death) ~ sex + trt, 
+                dataEvent = pbcSurv,
+                time_var = "year",
+                chains = 1, refresh = 2000, seed = 12345)
+
+summary(mod1, probs = c(.025,.975))
+```
+
+```{r}
+mod2 <- stan_jm(formulaLong = logBili ~ sex + trt + year + (year | id), 
+                dataLong = pbcLong,
+                formulaEvent = survival::Surv(futimeYears, death) ~ sex + trt, 
+                dataEvent = pbcSurv,
+                assoc = c("etavalue", "etaslope"),
+                time_var = "year", 
+                chains = 1, refresh = 2000, seed = 12345)
+```
+
+```{r}
+mod3 <- stan_jm(
+    formulaLong = list(
+        logBili ~ sex + trt + year + (year | id), 
+        albumin ~ sex + trt + year + (year | id)),
+    formulaEvent = survival::Surv(futimeYears, death) ~ sex + trt, 
+    dataLong = pbcLong, dataEvent = pbcSurv,
+    time_var = "year",
+    chains = 1, refresh = 2000, seed = 12345)
+
+print(mod3)
+summary(mod3, pars = "assoc")
+```
+
+
+```{r}
+p1 <- posterior_traj(mod3, m = 1, ids = 6:8)
+pp1 <- plot(p1, plot_observed = TRUE)
+pp1
+```
+
+```{r}
+p2 <- posterior_traj(mod3, m = 2, ids = 6:8)
+pp2 <- plot(p2, plot_observed = TRUE)
+pp2
+```
+
+```{r}
+p3 <- posterior_traj(mod3, m = 1, ids = 6:8, extrapolate = TRUE)
+pp3 <- plot(p3, plot_observed = TRUE, vline = TRUE)
+pp3
+```
+
+```{r}
+p4 <- posterior_traj(mod3, m = 2, ids = 6:8, extrapolate = TRUE)
+pp4 <- plot(p4, plot_observed = TRUE, vline = TRUE)
+pp4
+```
+
+```{r}
+p5 <- posterior_survfit(mod3, ids = 6:8)
+pp5 <- plot(p5)
+pp5
+```
+
+```{r}
+ndL <- pbcLong[pbcLong$id == 8, , drop = FALSE]
+ndE <- pbcSurv[pbcSurv$id == 8, , drop = FALSE]
+ndL$id <- paste0("new_patient")
+ndE$id <- paste0("new_patient")
+```
+
+```{r}
+p6 <- posterior_traj(mod3, m = 1, 
+                     newdataLong = ndL, 
+                     newdataEvent = ndE,
+                     last_time = "futimeYears")
+```
+
+```{r}
+pp6 <- plot(p6, plot_observed = TRUE, vline = TRUE)
+pp6
+```
+
+```{r}
+p7 <- posterior_traj(mod3, m = 2, 
+                     newdataLong = ndL, 
+                     newdataEvent = ndE,
+                     last_time = "futimeYears")
+
+pp7 <- plot(p7, plot_observed = TRUE, vline = TRUE)
+pp7
+```
+
+```{r}
+p8 <- posterior_survfit(mod3,
+                        newdataLong = ndL, 
+                        newdataEvent = ndE,
+                        last_time = "futimeYears")
+
+pp8 <- plot(p8)
+pp8
+
+```
+
+```{r}
+plot_stack_jm(yplot = list(pp6, pp7), survplot = pp8)
+c(ranef(mod3)[["Long1"]][["id"]][8,], 
+  ranef(mod3)[["Long2"]][["id"]][8,])
+```
+
+```{r}
+ndL <- expand.grid(year = seq(0, 10, 1),
+                   sex = c("m", "f"), 
+                   trt = 0:1)
+ndL$id <- rep(c("male_notrt", "female_notrt",
+                "male_trt", "female_trt"), each = 11)
+ndL <- ndL[, c(4,1,2,3)]
+str(ndL)
+```
+
+```{r}
+p1 <- posterior_traj(mod3, m = 1, newdataLong = ndL, dynamic = FALSE)
+plot(p1) + ggplot2::coord_cartesian(ylim = c(-10,15))
+```
+
+```{r}
+fixef(mod3)$Long1
+```
+
+```{r}
+VarCorr(mod3)
+```
+
+```{r}
+p1 <- posterior_survfit(mod3, standardise = TRUE, times = 0)
+head(p1) # data frame with standardised survival probabilities
+```

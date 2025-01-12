@@ -1,0 +1,315 @@
+---
+title: "Bayesian workflow for disease transmission modeling in Stan"
+format: html
+editor: visual
+---
+
+## 1 Simple SIR
+
+
+```{r}
+library(outbreaks)
+library(tidyverse)
+head(influenza_england_1978_school)
+```
+
+```{r}
+theme_set(theme_bw())
+ggplot(data = influenza_england_1978_school) + 
+  geom_point(mapping = aes(x = date, y = in_bed)) + 
+  labs(y = "Number of students in bed")
+```
+
+```{r}
+library(rstan)
+library(gridExtra)
+rstan_options (auto_write = TRUE)
+options (mc.cores = parallel::detectCores ())
+```
+
+```{r}
+# time series of cases
+cases <- influenza_england_1978_school$in_bed  # Number of students in bed
+
+# total count
+N <- 763;
+
+# times
+n_days <- length(cases) 
+t <- seq(0, n_days, by = 1)
+t0 = 0 
+t <- t[-1]
+
+#initial conditions
+i0 <- 1
+s0 <- N - i0
+r0 <- 0
+y0 = c(S = s0, I = i0, R = r0)
+
+# data for Stan
+data_sir <- list(n_days = n_days, y0 = y0, t0 = t0, ts = t, N = N, cases = cases)
+
+# number of MCMC steps
+niter <- 2000
+```
+
+```{r}
+model <- stan_model("stan_models/models_influenza/sir_negbin.stan")
+fit_sir_negbin <- sampling(model,
+                data = data_sir,
+                iter = niter,
+                chains = 4, 
+                seed = 0)
+```
+
+### Checking the inference
+
+```{r}
+pars=c('beta', 'gamma', "R0", "recovery_time")
+print(fit_sir_negbin, pars = pars)
+```
+
+```{r}
+stan_dens(fit_sir_negbin, pars = pars, separate_chains = TRUE)
+```
+
+```{r}
+smr_pred <- cbind(as.data.frame(summary(
+  fit_sir_negbin, pars = "pred_cases", probs = c(0.05, 0.5, 0.95))$summary), t, cases)
+colnames(smr_pred) <- make.names(colnames(smr_pred)) # to remove % in the col names
+
+c_posterior <- "yellow"
+
+ggplot(smr_pred, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = c_posterior, alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = c_posterior) + 
+  geom_point(mapping = aes(y = cases)) +
+  labs(x = "Day", y = "Number of students in bed")
+```
+
+```{r}
+params <- lapply(t, function(i){sprintf("y[%s,2]", i)}) #number of infected for each day
+smr_y <- as.data.frame(summary(fit_sir_negbin, 
+                               pars = params, probs = c(0.05, 0.5, 0.95))$summary)
+colnames(smr_y) <- make.names(colnames(smr_y)) # to remove % in the col names
+
+ggplot(smr_y, mapping = aes(x = t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = c_posterior, alpha = 0.35) +
+  geom_line(mapping = aes(x = t, y = X50.), color = c_posterior) + 
+  labs(x = "Day", y = "Number of infected students")
+```
+
+## 2 Using simulated data to understand our model
+
+```{r}
+model_prior <- stan_model("stan_models/models_influenza/sir_prior.stan")
+
+fit_sir_prior <- sampling(model_prior,
+                          data = data_sir, 
+                          chains = 4,
+                          seed = 0)
+```
+
+```{r}
+c_prior <- "yellow"
+s_prior <- rstan::extract(fit_sir_prior)
+ggplot(tibble(r = s_prior$recovery_time)) + 
+  geom_density(aes(x = r),fill=c_prior, alpha = 0.6) + 
+  geom_vline(xintercept = c(0.5,30), color = "red",linetype=2) + 
+  scale_x_log10() +
+  scale_y_continuous(expand=expansion(c(0,.05))) +
+  labs(x="Recovery time (days, log)",y="Probability density")
+```
+
+
+```{r}
+ggplot(tibble(r = s_prior$R0)) + 
+  geom_density(aes(x = r),fill=c_prior, alpha = 0.6) + 
+  geom_vline(xintercept = c(1,10), color = "red",linetype=2) + 
+  scale_x_log10() +
+  scale_y_continuous(expand=expansion(c(0,.05))) +
+  labs(x="Basic reproduction number (log)",y="Probability density")
+```
+
+```{r}
+n_draws <- 1000
+draws <- as_tibble(t(s_prior$y[,,2][1:n_draws,])) %>% add_column(t=t)
+draws <-  pivot_longer(draws, c(1:1000) , names_to = "draw")
+draws %>% 
+  ggplot() + 
+  geom_line(mapping = aes(x = t, y=value, group = draw), alpha = 0.6, size=0.1) +
+  geom_hline(yintercept=763, color="red")  +
+  geom_text(x=1.8, y=747, label="Population size", color="red") +
+  labs(x = "Day", y="Number of infected students")
+```
+
+```{r}
+smr_pred <- cbind(as.data.frame(summary(fit_sir_prior, pars="pred_cases", 
+                                        probs=c(0.05, 0.5, 0.95))$summary), t)
+colnames(smr_pred) <- make.names(colnames(smr_pred)) # to remove % in the col names
+
+ggplot(smr_pred, mapping=aes(x=t)) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = c_prior, alpha = 0.35) +
+  geom_line(mapping=aes(x=t, y=X50.), color = c_prior) + 
+  geom_hline(yintercept=763, color="red" ) +
+  geom_text(x=1.8, y=747, label="Population size", color="red") +
+  labs(x = "Day", y="Number of students in bed")
+```
+
+### Can our inference algorithm recover the right parameters?
+
+```{r}
+# one arbitrary draw from the prior distribution
+draw <- 12 
+# the number of predicted cases sampled from the prior distribution, which we will use as data
+cases_simu <- s_prior$pred_cases[draw,] 
+
+data_simu <-  list (n_days  = n_days, y0 = y0, t0 = t0, ts = t, N=N, cases=cases_simu)
+fit_simu <- sampling(model, 
+                     data=data_simu, 
+                     chains=4,
+                     seed = 0)
+
+params = c("beta", "gamma", "phi")
+paste("true beta :", toString(s_prior$beta[draw]), 
+      ", true gamma :", toString(s_prior$gamma[draw]), ", true phi :", toString(s_prior$phi[draw]))
+```
+
+```{r}
+print(fit_simu, pars = params)
+```
+
+```{r}
+c_simu<-"green"
+plot_beta <- stan_dens(fit_simu, pars="beta", fill = c_simu) + geom_vline(xintercept =s_prior$beta[draw])
+plot_gamma <- stan_dens(fit_simu, pars="gamma", fill = c_simu) + geom_vline(xintercept = s_prior$gamma[draw])
+plot_phi <- stan_dens(fit_simu, pars="phi_inv", fill = c_simu) + geom_vline(xintercept = s_prior$phi_inv[draw])
+grid.arrange(plot_beta, plot_gamma, plot_phi, nrow=1)
+```
+
+## 4 COVID-19 transmission in Switzerland
+
+```{r}
+library(tidybayes)
+library(gridExtra)
+df_swiss <- read_csv("data/swiss_agg_data.csv")
+df_swiss
+```
+
+```{r}
+c_mid<-"red"
+c_dark<-"black"
+df_swiss %>% 
+  ggplot() + 
+  geom_bar(mapping = aes(x = date, y = report_dt), fill = c_mid, color = c_dark, stat = "identity") +
+  labs(y="Number of reported cases")
+```
+
+```{r}
+# Swiss population
+N <- 8.57E6;
+
+#initial conditions
+i0 <- 1
+s0 <- N - i0
+r0 <- 0
+y0 = c(S = s0, I = i0, R = r0)
+
+# Cases
+cases <- df_swiss$report_dt
+
+# times
+n_days <- length(cases)
+t <- seq(1, n_days, by = 1)
+t0 = 0
+t <- t
+
+date_switch <- "2020-03-13" # date of introduction of control measures
+tswitch <- df_swiss %>% filter(date < date_switch) %>% nrow() + 1 # convert time to number
+
+date_survey_left <- "2020-05-04"
+date_survey_right <- "2020-05-07"
+t_survey_start <- df_swiss %>% filter(date < date_survey_left) %>% nrow() + 1 # convert time to number
+t_survey_end <- df_swiss %>% filter(date < date_survey_right) %>% nrow() + 1 # convert time to number
+n_infected_survey <-  83
+n_tested_survey <-  775
+
+data_forcing_survey <- c(data_forcing, list(t_survey_start = t_survey_start, 
+                                                t_survey_end = t_survey_end,
+                                                n_infected_survey = n_infected_survey,
+                                                n_tested_survey = n_tested_survey))
+
+
+model_forcing <- stan_model("stan_models/models_influenza/seir_forcing.stan")
+fit_forcing <- sampling(model_forcing, 
+                        data_forcing_survey, 
+                        iter=1000,
+                        seed=4)
+
+```
+
+```{r}
+pairs(fit_forcing_survey, pars = c("beta", "gamma", "a", "p_reported", "nu", "xi", "eta"))
+```
+
+```{r}
+stan_hist(fit_forcing_survey_max, pars = "p_reported", fill = c_posterior, color=c_dark)
+```
+
+```{r}
+smr_pred <- cbind(as.data.frame(summary(fit_forcing_survey_max, pars = "pred_cases", probs = c(0.025, 0.05, 0.1, 0.5, 0.9, 0.95, 0.975))$summary), t=1:(n_days-1), cases = cases[1:length(cases)-1])
+colnames(smr_pred) <- make.names(colnames(smr_pred)) # to remove % in the col names
+
+ggplot(smr_pred, mapping = aes(x = t)) +
+  #geom_ribbon(aes(ymin = X2.5., ymax = X97.5.), fill = c_dark, ) +
+  geom_ribbon(aes(ymin = X5., ymax = X95.), fill = c_posterior, alpha=0.35) +
+  #geom_ribbon(aes(ymin = X10., ymax = X90.), fill = c_light) +
+  geom_line(mapping = aes(x = t, y = X50.), color = c_posterior) +
+  geom_point(mapping = aes(y = cases)) +
+  labs(x = "Day", y = "Incidence")
+```
+
+```{r}
+fit_forcing_survey_max %>% 
+  spread_draws(Reff[n_days]) %>% 
+  group_by(n_days) %>% 
+  summarise(R0_mean = mean(Reff), R09 = quantile(Reff, 0.95), R01 = quantile(Reff, 0.05)) %>% 
+  ggplot() +
+  geom_ribbon(aes(x = n_days, ymin = R01, ymax = R09), fill = c_posterior, alpha=0.35)+
+  geom_line(mapping = aes(n_days, R0_mean), color = c_posterior) +
+  geom_vline(aes(xintercept = tswitch))
+```
+
+```{r}
+n = 4000
+prior = tibble(
+  beta = abs(rnorm(n,2,1)),
+  gamma = abs(rnorm(n,.4,.5)),
+  a = abs(rnorm(n,.4,.5)),
+  phi_inv = rexp(n,5),
+  p_reported = rbeta(n, 1, 2),
+  eta = rbeta(n, 2.5, 4),
+  nu = rexp(n,1./5),
+  xi = .5 + rbeta(n,1, 1)
+) %>%
+  pivot_longer(everything()) %>%
+  mutate(type="Prior")
+
+pars = c("beta","gamma","phi_inv","a","p_reported","eta","nu","xi")
+samp =
+  extract(fit_forcing_survey_max,pars) %>%
+  as.data.frame() %>%
+  pivot_longer(everything()) %>%
+  mutate(type="Posterior") %>%
+ bind_rows(prior) %>%
+  mutate(name=factor(name,levels=pars),
+         type=factor(type,levels=c("Prior","Posterior")))
+
+ggplot(samp) +
+  geom_density(aes(x=value,fill=type),alpha=.8) +
+  facet_wrap(~name,scale="free",ncol=4) +
+  scale_fill_manual(values=c(c_prior,c_posterior)) +
+  scale_y_continuous(expand=expansion(c(0,.05))) +
+  labs(x="Value",y="Probability density",fill=NULL) +
+  theme(legend.position="bottom")
+```

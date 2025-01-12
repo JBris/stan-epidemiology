@@ -47,3 +47,9 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+.cache
+.config
+.local
+.sudo_as_admin_successful
+.wget-hsts
