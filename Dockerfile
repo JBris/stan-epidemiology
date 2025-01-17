@@ -8,4 +8,8 @@ RUN install2.r --error --skipmissing --skipinstalled -n -1 \
     spdep \
     rgdal \ 
     survminer \
+    phytools \
+    bnlearn \ 
+    BGGM \ 
+    cna \ 
     && strip /usr/local/lib/R/site-library/*/libs/*.so

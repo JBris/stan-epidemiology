@@ -1,2 +1,3 @@
-# stan_epidemiology
-Stan for statistical epidemiology
+# statistical-epidemiology
+
+Statistical epidemiology

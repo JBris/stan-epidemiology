@@ -1,0 +1,87 @@
+---
+title: "Causal inference"
+format: html
+editor: visual
+---
+
+## Data
+
+```{r}
+library(outbreaks)
+library(tidyverse)
+df_swiss <- read_csv("data/swiss_agg_data.csv") |>
+  mutate(
+    date = date |>
+      as.POSIXct() |>
+      as.numeric()
+  )
+
+df_swiss
+```
+
+## bnlearn
+
+```{r}
+library(bnlearn)
+
+bn_models <- list(
+  cextend(averaged.network(boot.strength(df_swiss, algorithm = "hc")), strict = F),
+  cextend(averaged.network(boot.strength(df_swiss, algorithm = "aracne")), strict = F),
+  cextend(averaged.network(boot.strength(df_swiss, algorithm = "gs")), strict = F),
+  cextend(averaged.network(boot.strength(df_swiss, algorithm = "mmhc")), strict = F),
+  cextend(averaged.network(boot.strength(df_swiss, algorithm = "mmpc")), strict = F)
+)
+
+model_strength <- custom.strength(bn_models, names(df_swiss))
+ensemble_bn <- cextend(averaged.network(model_strength), strict = F)
+plot(ensemble_bn)
+```
+
+```{r}
+fitted = bn.fit(ensemble_bn, df_swiss, method = "mle-g")
+bn.fit.qqplot(fitted)
+```
+
+```{r}
+bn.fit.xyplot(fitted)
+```
+
+```{r}
+bn.fit.histogram(fitted)
+```
+
+
+## BGGM
+
+```{r}
+library(BGGM)
+
+fit <- df_swiss |>
+  dplyr::select(date, onset_dt, hospit_dt, total_tested) |>
+  estimate()
+
+selected_network <- BGGM::select(fit, 
+                           alternative = "exhaustive", 
+                           bf_cut = 3)
+
+E <- select(fit, 
+            cred = 0.95, 
+            alternative = "two.sided")
+
+convergence(fit)
+plot(E)
+```
+
+
+## causalHyperGraph
+
+```{r}
+ana <- cna(df_swiss)
+pl <- plot(asf(ana))
+pl
+plot(csf(ana))
+plot(csf(ana), ask = FALSE)
+plot(ana)
+plot(ana, show_formula = TRUE)
+```
+
