@@ -1,0 +1,150 @@
+---
+title: "Basic SIR"
+format: html
+editor: visual
+---
+
+## Fitting a Basic SIR Model in Stan
+
+```{r}
+library(ggplot2)
+library(deSolve)
+library(tidyr)
+theme_set(theme_minimal())
+
+# S: susceptible, I: infected, R: recovered
+SIR <- function(t, state, pars) {
+  with(as.list(c(state, pars)), {
+    N <- S + I + R
+    dS_dt <- -b * I/N * S
+    dI_dt <-  b * I/N * S - g * I
+    dR_dt <-  g * I
+    return(list(c(dS_dt, dI_dt, dR_dt)))
+  })
+}
+
+n <- 100
+n_pop <- 763 
+pars <- c(b = 2, g = 0.5)
+state <- c(S = n_pop - 1, I = 1, R = 0)
+times <- seq(1, 15, length = n)
+sol <-
+  ode(
+    y = state,
+    times = times,
+    func = SIR,
+    parms = pars,
+    method = "ode45"
+  )
+sol <- as.data.frame(sol)
+sol_long <- sol %>% 
+  tidyr::pivot_longer(-time, 
+  names_to = "state", values_to = "value")
+
+sol_long %>%
+  ggplot(aes(time, value, color = state)) +
+  geom_line() +
+  guides(color = guide_legend(title = NULL)) +
+  scale_color_discrete(labels = c("Infected","Recovered","Susceptible")) +
+  xlab("Days") + ylab("Number of people") +
+  ggtitle("Basic SIR model", 
+          subtitle = "3-state ODE with beta = 2, 
+          gamma = 0.5, R0 = 4")
+```
+
+## Inferring the parameters in Stan
+
+```{r}
+set.seed(1234)
+y <- rpois(n, sol$I)
+```
+
+
+```{r}
+library(cmdstanr)
+data <- list(n_obs = n, n_pop = n_pop, y = y, t0 = 0, ts = times)
+m1 <- cmdstan_model("stan_models/sir.stan")
+f1 <- m1$sample(
+  data = data, 
+  seed = 1234,
+  num_chains = 4, 
+  num_cores = 4,
+  num_warmup = 500,
+  num_samples = 500
+)
+sf1   <- rstan::read_stan_csv(f1$output_files())
+theta <- rstan::extract(sf1, pars = "theta")
+```
+
+```{r}
+quantile(theta$theta[, 1], probs = c(0.05, 0.50, 0.95)) 
+ quantile(theta$theta[, 2], probs = c(0.05, 0.50, 0.95))
+```
+
+```{r}
+y_hat <- rstan::extract(sf1, pars = "y_hat")
+
+# helper function used for plotting the results
+make_df <- function(d, interval = .90, t, obs, pop) {
+  S <- d[, , 1] # Susceptible draws, not used
+  I <- d[, , 2] # Infection draws
+  R <- d[, , 3] # Recovered draws, not used
+  
+  # compute the uncertainty interval
+  low_quant <- (1-interval) / 2
+  high_quant <- interval + low_quant
+  low <- apply(I, 2, quantile, probs = low_quant, na.rm=T) * pop
+  high <- apply(I, 2, quantile, probs = high_quant, na.rm=T) * pop
+  
+  d <- tibble(low, high, times = t, obs)
+  
+  return(d)
+}
+
+d <- make_df(d = y_hat$y_hat, interval = 0.90, times, obs = sol$I, pop = n_pop)
+ggplot(aes(times, obs), data = d) +
+  geom_ribbon(aes(ymin = low, ymax = high), fill = "grey70") +
+  geom_line(color = "red", size = 0.3) +
+  xlab("Days") + ylab("Infections (90% Uncertainty)") +
+  ggtitle("SIR Estimation",
+          subtitle = "Red curve is the true rate")
+```
+
+```{r}
+pct_train <- 0.30
+n_train <- floor(n * pct_train)
+n_pred <- n - n_train
+times_pred <- times[(n_train + 1):n]
+y_train <- y[1:n_train]
+data <- list(n_obs = n_train, n_pred = n_pred, 
+             n_pop = n_pop, y = y_train, 
+             t0 = 0, ts = times[1:n_train], ts_pred = times_pred)
+
+m2 <- cmdstan_model("stan_models/sir.stan")
+
+f2 <- m2$sample(
+  data = data,
+  seed = 1234,
+  num_chains = 4, 
+  num_cores = 4,
+  num_warmup = 500,
+  num_samples = 500,
+  adapt_delta = 0.98
+)
+
+sf2 <- rstan::read_stan_csv(f2$output_files())
+y_hat <- rstan::extract(sf2, pars = "y_hat")
+y_hat_pred <- rstan::extract(sf2, pars = "y_hat_pred")
+d_train <- make_df(y_hat$y_hat, 0.90, data$ts, sol$I[1:n_train], n_pop)
+d_pred <- make_df(y_hat_pred$y_hat_pred, 0.90, data$ts_pred, sol$I[(n_train + 1):n], n_pop)
+d <- dplyr::bind_rows(d_train, d_pred) 
+
+ggplot(aes(times, obs), data = d) +
+  geom_ribbon(aes(ymin = low, ymax = high), 
+                  fill = "grey70", alpha = 1/2) +
+  geom_line(color = "red", size = 0.3) +
+  geom_vline(xintercept = d$times[n_train], linetype = "dotdash") +
+  xlab("Days") + ylab("Infections (90% Uncertainty)") +
+  ggtitle("SIR prediction trained on 5 days of data",
+          subtitle = "Red curve is the true rate")
+```

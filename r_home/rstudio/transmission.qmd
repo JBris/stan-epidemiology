@@ -174,4 +174,3 @@ ggplot(df_sample, aes(x=sample_time, y=sample_prop)) +
   theme(axis.line.x = element_line(color="black"),
         axis.line.y = element_line(color="black"))
 ```
-

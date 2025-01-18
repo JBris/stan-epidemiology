@@ -12,4 +12,5 @@ RUN install2.r --error --skipmissing --skipinstalled -n -1 \
     bnlearn \ 
     BGGM \ 
     cna \ 
+    deSolve \
     && strip /usr/local/lib/R/site-library/*/libs/*.so
